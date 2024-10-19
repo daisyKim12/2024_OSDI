@@ -1,0 +1,35 @@
+Search on built CAGRA graph index
+@factory -> single_cta_search
+@cagra_search.cuh -> max_queries: 10000
+@cagra_search.cuh -> itopk_size: 64
+@cagra_search.cuh -> team_size: 8
+@cagra_search.cuh -> search_width: 1
+@cagra_search.cuh -> min_iterations: 0
+@cagra_search.cuh -> max_iterations: 71
+@cagra_search.cuh -> thread_block_size: 64
+@cagra_search.cuh -> hashmap_min_bitlen: 0
+@cagra_search.cuh -> hashmap_max_fill_rate: 0.5
+@cagra_search.cuh -> num_random_samplings: 1
+@cagra_search.cuh -> rand_xor_mask: 1213332
+@cagra_search.cuh -> dim: 128
+@cagra_search.cuh -> graph_degree: 64
+@cagra_search.cuh -> topk: 845108046
+@cagra_search.cuh -> hash_bitlen: 8
+@cagra_search.cuh -> small_hash_bitlen: 8
+@cagra_search.cuh -> small_hash_reset_interval: 1
+@cagra_search.cuh -> hashmap_size: 0
+@cagra_search.cuh -> dataset_size: 1970239841
+@cagra_search.cuh -> result_buffer_size: 128
+@cagra_search.cuh -> smem_size: 2580
+@cagra_search.cuh -> num_seeds: 0
+@cagra_search.cuh -> dev_seed.data(): 0
+@cagra_search.cuh -> queries.extent(0): 10000, queries.extent(1): 128
+Debug Info:
+graph: 1000000 x 64
+_topk_indices_ptr: 0x7f1c6e14e000
+_topk_distances_ptr: 0x7f1c6e1afb00
+_query_ptr: 0x7f1c5e848000
+n_queries: 10000
+_seed_ptr: 0
+_num_executed_iterations: 0
+topk: 10
