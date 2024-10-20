@@ -20,6 +20,23 @@ logging.basicConfig(
     level=logging.DEBUG,
 )
 
+def get_torch_dtype(np_dtype):
+    if np_dtype == np.float32:
+        return torch.float32
+    elif np_dtype == np.float64:
+        return torch.float64
+    elif np_dtype == np.int32:
+        return torch.int32
+    elif np_dtype == np.int64:
+        return torch.int64
+    elif np_dtype == np.uint32:
+        return torch.uint32
+    else:
+        raise TypeError(f"Unsupported NumPy dtype: {np_dtype}")
+def convert_to_torch(tensor):
+    torch_dtype = get_torch_dtype(tensor.dtype)
+    return torch.from_numpy(tensor).to(torch_dtype)
+
 def load_graph(base_path, algorithm, dataset):
     with open(f'{base_path}/{algorithm}/{dataset}.pkl', 'rb') as f:
         graph = pickle.load(f)
@@ -34,13 +51,17 @@ def main():
     args = parser.parse_args()
 
     graph = load_graph('../_graph', args.algorithm, args.dataset)
-    _, queries, ground_truth, _ = fetch_dataset('../_datasets', args.dataset)
+    dataset, queries, ground_truth, _ = fetch_dataset('../_datasets', args.dataset)
     logging.debug(f"Graph loaded: {graph.shape}")    
     logging.debug(f"Queries loaded: {queries.shape}")
     logging.debug(f"Ground truth loaded: {ground_truth.shape}")
+    
+    graph = convert_to_torch(graph)
+    dataset = convert_to_torch(dataset)
+    queries = convert_to_torch(queries)
 
     # Search the graph
-    topk = cagra.search(torch.from_numpy(graph).to(torch.int32), torch.from_numpy(queries).to(torch.int32))
+    topk = cagra.search(graph, dataset, queries)
     logging.debug(f"Topk: {topk.shape}")
 
     # # Fetch ground truth

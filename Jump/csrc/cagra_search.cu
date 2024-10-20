@@ -7,34 +7,54 @@
 #include <cstdint>
 #include <iostream>
 
-
 namespace py = pybind11;
+
+#define NUM_QUERIES 1000
+#define TOPK 10
+#define SEARCH_WIDTH 1
+#define MAX_ITER 71
+#define MIN_ITER 0
+#define INTERNEL_TOPK 64
+#define VECTOR_DIM 128
+#define DATASET_SIZE 1000000
+#define TEAM_SIZE 8
+#define GRAPH_DEGREE 64
+#define HASH_BITLEN 8
+
+typedef float DATA_T;
+typedef uint32_t INDEX_T;
+typedef float DISTANCE_T;
 
 __global__ void search_kernel 
 (
-  int* graph,
-  int* queries,
-  int* results,
-  int topk
+  INDEX_T* graph_ptr,
+  DATA_T* dataset_ptr,
+  DATA_T* queries_ptr,
+  INDEX_T* results_ptr,
 )
 {
 
-  const auto query_id = blockIdx.y;
-  extern __shared__ std::uint32_t smem[];
+  int result_buffer_size = INTERNEL_TOPK + (SEARCH_WIDTH * GRAPH_DEGREE);
+  if(result_buffer_size % 32) { result_buffer_size += 32 - (result_buffer_size % 32); }
+  // use smem as buffer
+  extern __shared__ DATA_T query_buffer[VECTOR_DIM];
+  extern __shared__ INDEX_T result_indices_buffer[result_buffer_size];
+  extern __shared__ DISTANCE_T result_distances_buffer[result_buffer_size];
+  extern __shared__ INDEX_T parent_list_buffer[SEARCH_WIDTH];
 
-  // Set smem working buffer for the distance calculation
-  dataset_desc.set_smem_ptr(distance_work_buffer_ptr);
 
-  // A flag for filtering.
-  auto filter_flag = terminate_flag;
+  // copy query to smem
+  int query_id = blockIdx.y;
+  DATA_T* query_ptr = queries_ptr + query_id * VECTOR_DIM;
+  for(int i = threadIdx.x; i < VECTOR_DIM; i += blockDim.x) {
+    query_buffer[i] = query_ptr[i];
+  }
+  __syncthreads();
 
-  const DATA_T* const query_ptr = queries_ptr + query_id * dataset_desc.dim;
-  dataset_desc.template copy_query<DATASET_BLOCK_DIM>(
-    query_ptr, query_buffer, query_smem_buffer_length);
-
+  // init termination flag
+  uint32_t termination_flag;
   if (threadIdx.x == 0) {
-    terminate_flag[0] = 0;
-    topk_ws[0]        = ~0u;
+    terminate_flag = 0;
   }
 
   // init hashmap need hashmap
@@ -42,98 +62,18 @@ __global__ void search_kernel
   //
 
   // compute distance to randomly selecting nodes
-  const INDEX_T* const local_seed_ptr = seed_ptr ? seed_ptr + (num_seeds * query_id) : nullptr;
-  device::compute_distance_to_random_nodes<TEAM_SIZE, DATASET_BLOCK_DIM>(result_indices_buffer,
-                                                                         result_distances_buffer,
-                                                                         query_buffer,
-                                                                         dataset_desc,
-                                                                         result_buffer_size,
-                                                                         num_distilation,
-                                                                         rand_xor_mask,
-                                                                         local_seed_ptr,
-                                                                         num_seeds,
-                                                                         local_visited_hashmap_ptr,
-                                                                         hash_bitlen,
-                                                                         metric);
+  //
+  //
   __syncthreads();
 
   std::uint32_t iter = 0;
   while (1) {
-    // sort
-    if constexpr (TOPK_BY_BITONIC_SORT) {
 
-      const unsigned multi_warps_1 = ((blockDim.x >= 64) && (MAX_CANDIDATES > 128)) ? 1 : 0;
-      const unsigned multi_warps_2 = ((blockDim.x >= 64) && (MAX_ITOPK > 256)) ? 1 : 0;
-
-      // reset small-hash table.
-      if ((iter + 1) % small_hash_reset_interval == 0) {
-
-        unsigned hash_start_tid;
-        if (blockDim.x == 32) {
-          hash_start_tid = 0;
-        } else if (blockDim.x == 64) {
-          if (multi_warps_1 || multi_warps_2) {
-            hash_start_tid = 0;
-          } else {
-            hash_start_tid = 32;
-          }
-        } else {
-          if (multi_warps_1 || multi_warps_2) {
-            hash_start_tid = 64;
-          } else {
-            hash_start_tid = 32;
-          }
-        }
-        hashmap::init(local_visited_hashmap_ptr, hash_bitlen, hash_start_tid);
-      }
-
-      // topk with bitonic sort
-      if (std::is_same<SAMPLE_FILTER_T,
-                       raft::neighbors::filtering::none_cagra_sample_filter>::value ||
-          *filter_flag == 0) {
-        topk_by_bitonic_sort<MAX_ITOPK, MAX_CANDIDATES>(result_distances_buffer,
-                                                        result_indices_buffer,
-                                                        internal_topk,
-                                                        result_distances_buffer + internal_topk,
-                                                        result_indices_buffer + internal_topk,
-                                                        search_width * graph_degree,
-                                                        topk_ws,
-                                                        (iter == 0),
-                                                        multi_warps_1,
-                                                        multi_warps_2);
-        __syncthreads();
-      } else {
-        topk_by_bitonic_sort_1st<MAX_ITOPK + MAX_CANDIDATES>(
-          result_distances_buffer,
-          result_indices_buffer,
-          internal_topk + search_width * graph_degree,
-          internal_topk,
-          false);
-        if (threadIdx.x == 0) { *terminate_flag = 0; }
-      }
-    } else {
-      // topk with radix block sort
-      topk_by_radix_sort<MAX_ITOPK, INDEX_T>{}(
-        internal_topk,
-        gridDim.x,
-        result_buffer_size,
-        reinterpret_cast<std::uint32_t*>(result_distances_buffer),
-        result_indices_buffer,
-        reinterpret_cast<std::uint32_t*>(result_distances_buffer),
-        result_indices_buffer,
-        nullptr,
-        topk_ws,
-        true,
-        reinterpret_cast<std::uint32_t*>(smem_work_ptr));
-
-      // reset small-hash table
-      if ((iter + 1) % small_hash_reset_interval == 0) {
-        hashmap::init(local_visited_hashmap_ptr, hash_bitlen);
-      }
-    }
+    // bitonic sort
     __syncthreads();
 
-    if (iter + 1 == max_iteration) { break; }
+    if (iter + 1 == MAX_ITER
+  ) { break; }
 
     // pick up next parents
     if (threadIdx.x < 32) {
@@ -145,7 +85,7 @@ __global__ void search_kernel
                                                          search_width);
     }
 
-    if (*terminate_flag && iter >= min_iteration) { break; }
+    if (*terminate_flag && iter >= MIN_ITER) { break; }
 
     // compute the norms between child nodes and query node
     constexpr unsigned max_n_frags = 8;
@@ -157,7 +97,7 @@ __global__ void search_kernel
       knn_graph,
       graph_degree,
       local_visited_hashmap_ptr,
-      hash_bitlen,
+      HASH_BITLEN,
       parent_list_buffer,
       result_indices_buffer,
       search_width,
@@ -187,22 +127,23 @@ __global__ void search_kernel
 }
 
 
-torch::Tensor search(torch::Tensor graph, torch::Tensor queries) {
+torch::Tensor search(torch::Tensor graph, torch::Tensor dataset, torch::Tensor queries) {
   
   int block_size = 64;
-  int num_queries = queries.size(0);
-  int topk = 10;
+  int NUM_QUERIES = queries.size(0);
+  int TOPK = 10;
 
-  torch::Tensor results = torch::zeros({num_queries, topk}, torch::device(queries.device()).dtype(torch::kInt32));
-  
+  torch::Tensor results = torch::zeros({NUM_QUERIES, TOPK}, torch::device(queries.device()).dtype(torch::kInt32));
+
+
   dim3 thread_dims(block_size, 1, 1);
-  dim3 block_dims(1, num_queries, 1);
+  dim3 block_dims(1, NUM_QUERIES, 1);
 
   search_kernel<<<block_dims, thread_dims>>>(
-    graph.data_ptr<int>(),
-    queries.data_ptr<int>(),
-    results.data_ptr<int>(),
-    topk
+    graph.data_ptr<u32int_t>(),
+    dataset.data_ptr<float>(),
+    queries.data_ptr<float>(),
+    results.data_ptr<u32int_t>(),
   );  
 
   return results;
